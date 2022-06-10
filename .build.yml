@@ -1,0 +1,25 @@
+image: debian/stable
+arch: amd64
+packages:
+  - wget
+sources:
+  - git@git.sr.ht:~fmrsn/steven
+environment:
+  PATH: /home/build/go/bin:/bin:/usr/bin
+  go_version: go1.18.3
+  go_checksum: 956f8507b302ab0bb747613695cdae10af99bbd39a90cae522b7c0302cc27245
+secrets:
+  - 270fb008-0636-482b-880e-d6c2472ada6c
+tasks:
+  - install-go: |
+      wget -q -O go.tgz https://dl.google.com/go/$go_version.linux-amd64.tar.gz
+      sha256sum -c <<EOF
+      $go_checksum go.tgz
+      EOF
+      tar -xzf go.tgz
+      rm go.tgz
+      go version
+  - mirror-gh: |
+      ssh-keyscan github.com >>$HOME/.ssh/known_hosts
+      cd steven
+      git push --mirror git@github.com:bsid-es/steven
