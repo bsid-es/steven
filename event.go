@@ -3,6 +3,7 @@ package steven
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -20,12 +21,15 @@ type Event struct {
 
 var _ json.Unmarshaler = (*Event)(nil)
 
-func (e *Event) UnmarshalJSON(data []byte) (err error) {
+func (e *Event) UnmarshalJSON(data []byte) error {
 	type event2 Event
-	if err = json.Unmarshal(data, (*event2)(e)); err == nil {
-		err = e.Validate()
+	if err := json.Unmarshal(data, (*event2)(e)); err != nil {
+		return err
 	}
-	return err
+	if err := e.Validate(); err != nil {
+		return fmt.Errorf("invalid event: %v", err)
+	}
+	return nil
 }
 
 func (e *Event) Validate() (err error) {
