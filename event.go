@@ -35,7 +35,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 func (e *Event) Validate() (err error) {
 	switch {
 	case e.Duration <= 0:
-		return errors.New("duration must be non-negative")
+		return errors.New("duration must be positive")
 	case e.Every < 0:
 		return errors.New("every must be non-negative")
 	case e.Every > 0 && e.Every < e.Duration:
