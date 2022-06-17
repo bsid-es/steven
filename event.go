@@ -7,13 +7,13 @@ import (
 )
 
 type Event struct {
-	ID         string        `json:"id"`
-	Name       string        `json:"name"`
-	Start      time.Time     `json:"start"`
-	Duration   time.Duration `json:"duration"`
-	Interval   time.Duration `json:"interval,omitempty"`
-	LimitUntil time.Time     `json:"limitUntil,omitempty"`
-	LimitCount uint          `json:"limitCount,omitempty"`
+	ID       string        `json:"id"`
+	Name     string        `json:"name"`
+	Start    time.Time     `json:"start"`
+	Duration time.Duration `json:"duration"`
+	Every    time.Duration `json:"every,omitempty"`
+	Until    time.Time     `json:"until,omitempty"`
+	Count    uint          `json:"count,omitempty"`
 
 	last time.Time
 }
@@ -32,24 +32,24 @@ func (e *Event) Validate() (err error) {
 	switch {
 	case e.Duration <= 0:
 		return errors.New("duration must be non-negative")
-	case e.Interval < 0:
-		return errors.New("interval must be non-negative")
-	case e.Interval > 0 && e.Interval < e.Duration:
-		return errors.New("interval must be no less than duration")
-	case e.Interval > 0 && !e.LimitUntil.IsZero() && e.LimitCount != 0:
-		return errors.New("limitUntil and limitCount are mutually exclusive")
-	case e.Interval > 0 && !e.LimitUntil.IsZero() && !e.LimitUntil.After(e.Start):
-		return errors.New("limitUntil must happen after start")
+	case e.Every < 0:
+		return errors.New("every must be non-negative")
+	case e.Every > 0 && e.Every < e.Duration:
+		return errors.New("every must be no less than duration")
+	case e.Every > 0 && !e.Until.IsZero() && e.Count != 0:
+		return errors.New("until and count are mutually exclusive")
+	case e.Every > 0 && !e.Until.IsZero() && !e.Until.After(e.Start):
+		return errors.New("until must happen after start")
 	}
 	switch {
-	case e.Interval == 0:
+	case e.Every == 0:
 		e.last = e.Start
-	case e.Interval > 0 && !e.LimitUntil.IsZero():
-		count := e.LimitUntil.Sub(e.Start) / e.Interval
-		e.last = e.Start.Add(count * e.Interval)
-	case e.Interval > 0 && e.LimitCount != 0:
-		count := time.Duration(e.LimitCount) - 1
-		e.last = e.Start.Add(count * e.Interval)
+	case e.Every > 0 && !e.Until.IsZero():
+		count := e.Until.Sub(e.Start) / e.Every
+		e.last = e.Start.Add(count * e.Every)
+	case e.Every > 0 && e.Count != 0:
+		count := time.Duration(e.Count) - 1
+		e.last = e.Start.Add(count * e.Every)
 	}
 	return nil
 }
@@ -66,7 +66,7 @@ func (e *Event) Previous(from time.Time) time.Time {
 	inst := e.instance(from)
 	if from.Sub(inst) < e.Duration {
 		// Instance is still running; get the second to previous instance.
-		return inst.Add(-e.Interval)
+		return inst.Add(-e.Every)
 	}
 	return inst
 }
@@ -100,10 +100,10 @@ func (e *Event) Next(from time.Time) time.Time {
 		// Event is finished.
 		return time.Time{}
 	}
-	return e.instance(from.Add(e.Interval))
+	return e.instance(from.Add(e.Every))
 }
 
 func (e *Event) instance(from time.Time) time.Time {
-	count := from.Sub(e.Start) / e.Interval
-	return e.Start.Add(count * e.Interval).In(from.Location())
+	count := from.Sub(e.Start) / e.Every
+	return e.Start.Add(count * e.Every).In(from.Location())
 }

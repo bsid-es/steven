@@ -22,40 +22,40 @@ var validationTests = []struct {
 		Duration: 0,
 	},
 }, {
-	name: "negative interval between instances",
+	name: "negative every",
 	event: steven.Event{
 		Duration: 1 * time.Minute,
-		Interval: -1,
+		Every:    -1,
 	},
 }, {
-	name: "duration higher than interval between instances",
+	name: "duration greater than every",
 	event: steven.Event{
 		Duration: 2 * time.Minute,
-		Interval: 1 * time.Minute,
+		Every:    1 * time.Minute,
 	},
 }, {
-	name: "limituntil and limitcount set simultaneously",
+	name: "until and count set simultaneously",
 	event: steven.Event{
-		Duration:   1 * time.Minute,
-		Interval:   1 * time.Minute,
-		LimitUntil: time.Now(),
-		LimitCount: 1,
+		Duration: 1 * time.Minute,
+		Every:    1 * time.Minute,
+		Until:    time.Now(),
+		Count:    1,
 	},
 }, {
-	name: "limituntil before start",
+	name: "until before start",
 	event: steven.Event{
-		Start:      time.Date(2021, 12, 21, 0, 0, 0, 0, time.UTC),
-		Duration:   1 * time.Minute,
-		Interval:   1 * time.Minute,
-		LimitUntil: time.Date(2021, 12, 20, 0, 0, 0, 0, time.UTC),
+		Start:    time.Date(2021, 12, 21, 0, 0, 0, 0, time.UTC),
+		Duration: 1 * time.Minute,
+		Every:    1 * time.Minute,
+		Until:    time.Date(2021, 12, 20, 0, 0, 0, 0, time.UTC),
 	},
 }, {
-	name: "same start and limituntil",
+	name: "same start and until",
 	event: steven.Event{
-		Start:      time.Date(2021, 12, 21, 0, 0, 0, 0, time.UTC),
-		Duration:   1 * time.Minute,
-		Interval:   1 * time.Minute,
-		LimitUntil: time.Date(2021, 12, 21, 0, 0, 0, 0, time.UTC),
+		Start:    time.Date(2021, 12, 21, 0, 0, 0, 0, time.UTC),
+		Duration: 1 * time.Minute,
+		Every:    1 * time.Minute,
+		Until:    time.Date(2021, 12, 21, 0, 0, 0, 0, time.UTC),
 	},
 }}
 
@@ -136,7 +136,7 @@ func TestEventInstances(t *testing.T) {
 		event: steven.Event{
 			Start:    refStart,
 			Duration: refDuration,
-			Interval: refInterval,
+			Every:    refInterval,
 		},
 		params: []params{{
 			name: "before first instance",
@@ -172,10 +172,10 @@ func TestEventInstances(t *testing.T) {
 	}, {
 		name: "recurring event with limit date",
 		event: steven.Event{
-			Start:      refStart,
-			Duration:   refDuration,
-			Interval:   refInterval,
-			LimitUntil: refSecondStart.Add(1),
+			Start:    refStart,
+			Duration: refDuration,
+			Every:    refInterval,
+			Until:    refSecondStart.Add(1),
 		},
 		params: []params{{
 			name: "before first instance",
@@ -211,10 +211,10 @@ func TestEventInstances(t *testing.T) {
 	}, {
 		name: "recurring event with limit count",
 		event: steven.Event{
-			Start:      refStart,
-			Duration:   refDuration,
-			Interval:   refInterval,
-			LimitCount: 2,
+			Start:    refStart,
+			Duration: refDuration,
+			Every:    refInterval,
+			Count:    2,
 		},
 		params: []params{{
 			name: "before first instance",
@@ -290,10 +290,10 @@ func BenchmarkEventNext(b *testing.B) {
 func benchmarkEventInstance(b *testing.B, f func(*steven.Event, time.Time) time.Time) {
 	b.Helper()
 	event := steven.Event{
-		Start:      refStart,
-		Duration:   refDuration,
-		Interval:   refInterval,
-		LimitCount: 2,
+		Start:    refStart,
+		Duration: refDuration,
+		Every:    refInterval,
+		Count:    2,
 	}
 	if err := event.Validate(); err != nil {
 		b.Fatal(err)
@@ -312,10 +312,10 @@ func benchmarkEventInstance(b *testing.B, f func(*steven.Event, time.Time) time.
 		from: event.Start.Add(event.Duration),
 	}, {
 		name: "event of second instance",
-		from: event.Start.Add(event.Interval),
+		from: event.Start.Add(event.Every),
 	}, {
 		name: "end of second instance",
-		from: event.Start.Add(event.Interval + event.Duration),
+		from: event.Start.Add(event.Every + event.Duration),
 	}}
 	for _, tt := range tests {
 		tt := tt
