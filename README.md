@@ -1,5 +1,6 @@
 # Steven
 
+
 ## Introduction
 
 Some games have the concept of *events*:
@@ -88,3 +89,37 @@ that meets the following criteria:
 
 We'll call this experiment *Steven*,
 an anagram of the word "events".
+
+
+## Design
+
+TODO(fmrsn): Describe behavior on configuration reloading.
+
+Client-server communication:
+
+```mermaid
+sequenceDiagram
+
+participant Client
+participant Broker
+participant Datastore
+participant Scheduler
+
+Client->>+Broker:GET /events
+Broker->>+Datastore:list()
+Datastore-->>-Broker:[events]
+Broker-->>Client:RESET [events]
+
+opt START event
+Scheduler-)Broker:START event
+Broker-)Client:START event
+end
+
+opt STOP event
+Scheduler-)Broker:STOP event
+Broker-)Client:STOP event
+end
+
+Client-)Broker:<disconnect>
+deactivate Broker
+```
