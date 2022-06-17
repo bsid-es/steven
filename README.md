@@ -115,6 +115,11 @@ Scheduler-)Broker:START event
 Broker-)Client:START event
 end
 
+opt NEXT event
+Scheduler-)Broker:NEXT event
+Broker-)Client:NEXT event
+end
+
 opt STOP event
 Scheduler-)Broker:STOP event
 Broker-)Client:STOP event
