@@ -30,20 +30,21 @@ type Scheduler interface {
 type scheduler struct {
 	Now func() time.Time
 
-	reloadc chan []*Event
+	reloadC chan []*Event
 
 	mu     sync.Mutex
 	q      schedQueue
-	againc chan struct{}
+	againC chan struct{}
 
-	eventsc chan SchedEvent
+	eventsC chan SchedEvent
 }
 
 func NewScheduler() *scheduler {
 	return &scheduler{
 		Now:     time.Now,
-		reloadc: make(chan []*Event, 1),
-		againc:  make(chan struct{}, 1),
+		reloadC: make(chan []*Event, 1),
+		againC:  make(chan struct{}, 1),
+		eventsC: make(chan SchedEvent),
 	}
 }
 
@@ -51,73 +52,76 @@ var _ Scheduler = (*scheduler)(nil)
 
 func (s *scheduler) Reload(events ...*Event) {
 	select {
-	case <-s.reloadc:
+	case <-s.reloadC:
 	default:
 	}
-	s.reloadc <- events
+	s.reloadC <- events
 }
 
 func (s *scheduler) Run(ctx context.Context) error {
 	if s.Now == nil {
 		return errors.New("need a Now function")
 	}
-	s.eventsc = make(chan SchedEvent)
+
 	go func() {
-		defer close(s.eventsc)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case events := <-s.reloadc:
-				s.reload(events)
-			}
-		}
+		<-ctx.Done()
+		close(s.eventsC)
 	}()
+	go s.reload(ctx)
 	go s.run(ctx)
+
 	return nil
 }
 
 // Events must be called after Run.
 func (s *scheduler) Events() <-chan SchedEvent {
-	return s.eventsc
+	return s.eventsC
 }
 
-func (s *scheduler) reload(events []*Event) {
-	mu, q, again := &s.mu, &s.q, s.againc
+func (s *scheduler) reload(ctx context.Context) {
+	mu, q, again := &s.mu, &s.q, s.againC
+	for {
+		select {
+		case <-ctx.Done():
+			return
 
-	mu.Lock()
-	defer mu.Unlock()
+		case events := <-s.reloadC:
+			mu.Lock()
 
-	// Rebuild queue.
-	q.clear()
-	now := s.Now()
-	for _, e := range events {
-		if curr := e.Current(now); !curr.IsZero() {
-			*q = append(*q, schedQueueEntry{
-				at: curr.Add(e.Duration),
-				event: SchedEvent{
-					Type:     SchedStop,
-					Event:    e,
-					Instance: curr,
-				},
-			})
-		} else if next := e.Next(now); !next.IsZero() {
-			*q = append(*q, schedQueueEntry{
-				at: next,
-				event: SchedEvent{
-					Type:     SchedStart,
-					Event:    e,
-					Instance: next,
-				},
-			})
+			// Rebuild queue.
+			q.clear()
+			now := s.Now()
+			for _, e := range events {
+				if curr := e.Current(now); !curr.IsZero() {
+					*q = append(*q, schedQueueEntry{
+						at: curr.Add(e.Duration),
+						event: SchedEvent{
+							Type:     SchedStop,
+							Event:    e,
+							Instance: curr,
+						},
+					})
+				} else if next := e.Next(now); !next.IsZero() {
+					*q = append(*q, schedQueueEntry{
+						at: next,
+						event: SchedEvent{
+							Type:     SchedStart,
+							Event:    e,
+							Instance: next,
+						},
+					})
+				}
+			}
+			heap.Init(q)
+
+			// Emit signal to restart scheduling.
+			select {
+			case again <- struct{}{}:
+			default:
+			}
+
+			mu.Unlock()
 		}
-	}
-	heap.Init(q)
-
-	// Emit signal to restart scheduling.
-	select {
-	case again <- struct{}{}:
-	default:
 	}
 }
 
@@ -125,7 +129,7 @@ func (s *scheduler) reload(events []*Event) {
 //  - Handle misfire.
 //  - Handle backpressure.
 func (s *scheduler) run(ctx context.Context) {
-	mu, q, again := &s.mu, &s.q, s.againc
+	mu, q, again := &s.mu, &s.q, s.againC
 again:
 	for {
 		// Get next event.
@@ -169,7 +173,7 @@ again:
 			return
 		case <-again:
 			continue again
-		case s.eventsc <- event:
+		case s.eventsC <- event:
 		}
 
 		// Reschedule event.
