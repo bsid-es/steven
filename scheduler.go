@@ -128,8 +128,6 @@ func (s *scheduler) reload(ctx context.Context) {
 	}
 }
 
-// TODO(emerson):
-//  - Handle backpressure.
 func (s *scheduler) run(ctx context.Context) {
 	mu, q, again := &s.mu, &s.q, s.againC
 again:
