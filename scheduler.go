@@ -11,14 +11,14 @@ import (
 type SchedEventType int
 
 const (
-	SchedStart SchedEventType = iota
-	SchedStop
+	SchedEventStart SchedEventType = iota
+	SchedEventStop
 )
 
 type SchedEvent struct {
-	Type     SchedEventType
-	Event    *Event
-	Instance time.Time
+	Type       SchedEventType
+	Event      *Event
+	Start, End time.Time
 }
 
 type Scheduler interface {
@@ -93,21 +93,24 @@ func (s *scheduler) reload(ctx context.Context) {
 			now := s.Now()
 			for _, e := range events {
 				if curr := e.Current(now); !curr.IsZero() {
+					end := curr.Add(e.Duration)
 					*q = append(*q, schedQueueEntry{
-						at: curr.Add(e.Duration),
+						at: end,
 						event: SchedEvent{
-							Type:     SchedStop,
-							Event:    e,
-							Instance: curr,
+							Type:  SchedEventStop,
+							Event: e,
+							Start: curr,
+							End:   end,
 						},
 					})
 				} else if next := e.Next(now); !next.IsZero() {
 					*q = append(*q, schedQueueEntry{
 						at: next,
 						event: SchedEvent{
-							Type:     SchedStart,
-							Event:    e,
-							Instance: next,
+							Type:  SchedEventStart,
+							Event: e,
+							Start: next,
+							End:   next.Add(e.Duration),
 						},
 					})
 				}
@@ -126,7 +129,6 @@ func (s *scheduler) reload(ctx context.Context) {
 }
 
 // TODO(emerson):
-//  - Handle misfire.
 //  - Handle backpressure.
 func (s *scheduler) run(ctx context.Context) {
 	mu, q, again := &s.mu, &s.q, s.againC
@@ -168,12 +170,19 @@ again:
 		}
 
 		// Send event.
-		select {
-		case <-ctx.Done():
-			return
-		case <-again:
-			continue again
-		case s.eventsC <- event:
+		from := event.Start
+		if event.Type != SchedEventStart || now.Before(event.End) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-again:
+				continue again
+			case s.eventsC <- event:
+			}
+		} else {
+			// There was a misfire.
+			event.Type = SchedEventStop
+			from = s.Now()
 		}
 
 		// Reschedule event.
@@ -184,25 +193,27 @@ again:
 			continue again
 		default:
 		}
-		if event.Type == SchedStart {
+		if event.Type == SchedEventStart {
 			// Schedule event stop.
 			(*q)[0] = schedQueueEntry{
-				at: event.Instance.Add(event.Event.Duration),
+				at: event.End,
 				event: SchedEvent{
-					Type:     SchedStop,
-					Event:    event.Event,
-					Instance: event.Instance,
+					Type:  SchedEventStop,
+					Event: event.Event,
+					Start: event.Start,
+					End:   event.End,
 				},
 			}
 			heap.Fix(q, 0)
-		} else if next := event.Event.Next(event.Instance); !next.IsZero() {
+		} else if next := event.Event.Next(from); !next.IsZero() {
 			// There's another instance to run. Reschedule event.
 			(*q)[0] = schedQueueEntry{
 				at: next,
 				event: SchedEvent{
-					Type:     SchedStart,
-					Event:    event.Event,
-					Instance: next,
+					Type:  SchedEventStart,
+					Event: event.Event,
+					Start: next,
+					End:   next.Add(event.Event.Duration),
 				},
 			}
 			heap.Fix(q, 0)

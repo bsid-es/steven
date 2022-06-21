@@ -31,10 +31,10 @@ func main() {
 
 	for se := range sched.Events() {
 		switch se.Type {
-		case steven.SchedStart:
-			fmt.Println("START |", se.Event.Name, "|", se.Instance)
-		case steven.SchedStop:
-			fmt.Println("STOP  |", se.Event.Name, "|", se.Instance)
+		case steven.SchedEventStart:
+			fmt.Println("START |", se.Event.Name, "|", se.Start)
+		case steven.SchedEventStop:
+			fmt.Println("STOP  |", se.Event.Name, "|", se.Start)
 		}
 	}
 
