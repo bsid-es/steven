@@ -22,45 +22,35 @@ type SchedEvent struct {
 }
 
 type Sched interface {
-	Reload(...*Event)
 	Run(context.Context) error
 	Register(chan<- SchedEvent)
+	Reload(...*Event)
 }
 
 type sched struct {
 	Now func() time.Time
 
-	reloadC chan []*Event
+	newEvents chan []*Event
+	reload    chan struct{}
 
-	mu     sync.Mutex
-	q      schedQueue
-	againC chan struct{}
-	ln     []chan<- SchedEvent
+	mu        sync.Mutex
+	listeners []chan<- SchedEvent
 }
 
 func NewSched() *sched {
 	return &sched{
-		Now:     time.Now,
-		reloadC: make(chan []*Event, 1),
-		againC:  make(chan struct{}, 1),
+		Now:       time.Now,
+		newEvents: make(chan []*Event, 1),
+		reload:    make(chan struct{}, 1),
 	}
 }
 
 var _ Sched = (*sched)(nil)
 
-func (s *sched) Reload(events ...*Event) {
-	select {
-	case <-s.reloadC:
-	default:
-	}
-	s.reloadC <- events
-}
-
 func (s *sched) Run(ctx context.Context) error {
 	if s.Now == nil {
 		return errors.New("need a Now function")
 	}
-	go s.reload(ctx)
 	go s.run(ctx)
 	return nil
 }
@@ -68,26 +58,46 @@ func (s *sched) Run(ctx context.Context) error {
 func (s *sched) Register(listener chan<- SchedEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ln = append(s.ln, listener)
+	s.listeners = append(s.listeners, listener)
 }
 
-func (s *sched) reload(ctx context.Context) {
-	mu, q, again := &s.mu, &s.q, s.againC
+func (s *sched) Reload(newEvents ...*Event) {
+	select {
+	case <-s.newEvents:
+	default:
+	}
+	s.newEvents <- newEvents
+
+	select {
+	case s.reload <- struct{}{}:
+	default:
+	}
+}
+
+func (s *sched) run(ctx context.Context) {
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, ln := range s.listeners {
+			close(ln)
+		}
+	}()
+
+	q := make(schedQueue, 0)
+again:
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case events := <-s.reloadC:
-			mu.Lock()
-
+		case events := <-s.newEvents:
 			// Rebuild queue.
 			q.clear()
 			now := s.Now()
 			for _, e := range events {
 				if curr := e.Current(now); !curr.IsZero() {
 					end := curr.Add(e.Duration)
-					*q = append(*q, schedQueueEntry{
+					q = append(q, schedQueueEntry{
 						at: end,
 						event: SchedEvent{
 							Type:  SchedEventStop,
@@ -97,7 +107,7 @@ func (s *sched) reload(ctx context.Context) {
 						},
 					})
 				} else if next := e.Next(now); !next.IsZero() {
-					*q = append(*q, schedQueueEntry{
+					q = append(q, schedQueueEntry{
 						at: next,
 						event: SchedEvent{
 							Type:  SchedEventStart,
@@ -108,62 +118,39 @@ func (s *sched) reload(ctx context.Context) {
 					})
 				}
 			}
-			heap.Init(q)
+			heap.Init(&q)
 
-			// Emit signal to restart scheduling.
-			select {
-			case again <- struct{}{}:
-			default:
-			}
-
-			mu.Unlock()
+		default:
 		}
-	}
-}
 
-func (s *sched) run(ctx context.Context) {
-	mu, q, again, ln := &s.mu, &s.q, s.againC, &s.ln
-	defer func() {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, ln := range *ln {
-			close(ln)
-		}
-		*ln = nil
-	}()
-again:
-	for {
 		// Get next event.
-		mu.Lock()
-		if len(*q) == 0 {
-			mu.Unlock()
+		if len(q) == 0 {
 			select {
 			case <-ctx.Done():
 				return
-			case <-again:
+			case <-s.reload:
 				continue again
 			}
 		}
-		at, event := (*q)[0].at, (*q)[0].event
-		mu.Unlock()
+		at, event := q[0].at, q[0].event
 
 		// Sleep until event fires.
 		now := s.Now()
 		for now.Before(at) {
-			sleep := time.NewTimer(at.Sub(now))
-			stopSleep := func() {
-				if !sleep.Stop() {
-					<-sleep.C
+			timer := time.NewTimer(at.Sub(now))
+			stop := func() {
+				if !timer.Stop() {
+					<-timer.C
 				}
 			}
 			select {
 			case <-ctx.Done():
-				stopSleep()
+				stop()
 				return
-			case <-again:
-				stopSleep()
+			case <-s.reload:
+				stop()
 				continue again
-			case <-sleep.C:
+			case <-timer.C:
 			}
 			now = s.Now()
 		}
@@ -171,19 +158,19 @@ again:
 		// Send event.
 		from := event.Start
 		if event.Type != SchedEventStart || now.Before(event.End) {
-			mu.Lock()
-			for _, ln := range *ln {
+			s.mu.Lock()
+			for _, ln := range s.listeners {
 				select {
 				case <-ctx.Done():
-					mu.Unlock()
+					s.mu.Unlock()
 					return
-				case <-again:
-					mu.Unlock()
+				case <-s.reload:
+					s.mu.Unlock()
 					continue again
 				case ln <- event:
 				}
 			}
-			mu.Unlock()
+			s.mu.Unlock()
 		} else {
 			// There was a misfire. Pretend we fired the "stop" event,
 			// and jump to the next instance closest to now.
@@ -192,16 +179,9 @@ again:
 		}
 
 		// Reschedule event.
-		mu.Lock()
-		select {
-		case <-again:
-			mu.Unlock()
-			continue again
-		default:
-		}
 		if event.Type == SchedEventStart {
 			// Schedule event stop.
-			(*q)[0] = schedQueueEntry{
+			q[0] = schedQueueEntry{
 				at: event.End,
 				event: SchedEvent{
 					Type:  SchedEventStop,
@@ -210,10 +190,10 @@ again:
 					End:   event.End,
 				},
 			}
-			heap.Fix(q, 0)
+			heap.Fix(&q, 0)
 		} else if next := event.Event.Next(from); !next.IsZero() {
 			// There's another instance to run. Reschedule event.
-			(*q)[0] = schedQueueEntry{
+			q[0] = schedQueueEntry{
 				at: next,
 				event: SchedEvent{
 					Type:  SchedEventStart,
@@ -222,12 +202,11 @@ again:
 					End:   next.Add(event.Event.Duration),
 				},
 			}
-			heap.Fix(q, 0)
+			heap.Fix(&q, 0)
 		} else {
 			// Event is finished. Drop it.
-			heap.Pop(q)
+			heap.Pop(&q)
 		}
-		mu.Unlock()
 	}
 }
 
