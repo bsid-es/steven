@@ -175,7 +175,7 @@ again:
 			// There was a misfire. Pretend we fired the "stop" event,
 			// and jump to the next instance closest to now.
 			event.Type = SchedEventStop
-			from = s.Now()
+			from = now
 		}
 
 		// Reschedule event.
