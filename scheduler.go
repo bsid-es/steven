@@ -24,7 +24,7 @@ type SchedEvent struct {
 type Scheduler interface {
 	Reload(...*Event)
 	Run(context.Context) error
-	Events() <-chan SchedEvent
+	Register(chan<- SchedEvent)
 }
 
 type scheduler struct {
@@ -35,8 +35,7 @@ type scheduler struct {
 	mu     sync.Mutex
 	q      schedQueue
 	againC chan struct{}
-
-	eventsC chan SchedEvent
+	ln     []chan<- SchedEvent
 }
 
 func NewScheduler() *scheduler {
@@ -44,7 +43,6 @@ func NewScheduler() *scheduler {
 		Now:     time.Now,
 		reloadC: make(chan []*Event, 1),
 		againC:  make(chan struct{}, 1),
-		eventsC: make(chan SchedEvent),
 	}
 }
 
@@ -62,20 +60,15 @@ func (s *scheduler) Run(ctx context.Context) error {
 	if s.Now == nil {
 		return errors.New("need a Now function")
 	}
-
-	go func() {
-		<-ctx.Done()
-		close(s.eventsC)
-	}()
 	go s.reload(ctx)
 	go s.run(ctx)
-
 	return nil
 }
 
-// Events must be called after Run.
-func (s *scheduler) Events() <-chan SchedEvent {
-	return s.eventsC
+func (s *scheduler) Register(listener chan<- SchedEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ln = append(s.ln, listener)
 }
 
 func (s *scheduler) reload(ctx context.Context) {
@@ -129,7 +122,15 @@ func (s *scheduler) reload(ctx context.Context) {
 }
 
 func (s *scheduler) run(ctx context.Context) {
-	mu, q, again := &s.mu, &s.q, s.againC
+	mu, q, again, ln := &s.mu, &s.q, s.againC, &s.ln
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ln := range *ln {
+			close(ln)
+		}
+		*ln = nil
+	}()
 again:
 	for {
 		// Get next event.
@@ -170,15 +171,22 @@ again:
 		// Send event.
 		from := event.Start
 		if event.Type != SchedEventStart || now.Before(event.End) {
-			select {
-			case <-ctx.Done():
-				return
-			case <-again:
-				continue again
-			case s.eventsC <- event:
+			mu.Lock()
+			for _, ln := range *ln {
+				select {
+				case <-ctx.Done():
+					mu.Unlock()
+					return
+				case <-again:
+					mu.Unlock()
+					continue again
+				case ln <- event:
+				}
 			}
+			mu.Unlock()
 		} else {
-			// There was a misfire.
+			// There was a misfire. Pretend we fired the "stop" event,
+			// and jump to the next instance closest to now.
 			event.Type = SchedEventStop
 			from = s.Now()
 		}

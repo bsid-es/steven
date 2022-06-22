@@ -29,7 +29,10 @@ func main() {
 
 	sched.Run(ctx)
 
-	for se := range sched.Events() {
+	mainc := make(chan steven.SchedEvent)
+	sched.Register(mainc)
+
+	for se := range mainc {
 		switch se.Type {
 		case steven.SchedEventStart:
 			fmt.Println("START |", se.Event.Name, "|", se.Start)
