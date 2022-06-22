@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -15,14 +16,16 @@ const (
 )
 
 type SchedEvent struct {
-	Type       SchedEventType
-	Event      *Event
-	Start, End time.Time
+	Type          SchedEventType
+	Event         *Event
+	Current, Next time.Time
+	end           time.Time
 }
 
 type Sched interface {
 	Run(context.Context) error
-	Register(chan<- SchedEvent)
+	Subscribe(context.Context, chan<- SchedEvent)
+	Unsubscribe(context.Context, chan<- SchedEvent)
 	Reload(...*Event)
 }
 
@@ -32,7 +35,8 @@ type sched struct {
 	newEvents chan []*Event
 	reload    chan struct{}
 
-	newListener chan chan<- SchedEvent
+	mu   sync.Mutex
+	subs map[chan<- SchedEvent]struct{}
 }
 
 func NewSched() (*sched, error) {
@@ -40,6 +44,7 @@ func NewSched() (*sched, error) {
 		Now:       time.Now,
 		newEvents: make(chan []*Event, 1),
 		reload:    make(chan struct{}, 1),
+		subs:      make(map[chan<- SchedEvent]struct{}),
 	}, nil
 }
 
@@ -53,8 +58,16 @@ func (s *sched) Run(ctx context.Context) error {
 	return nil
 }
 
-func (s *sched) Register(listener chan<- SchedEvent) {
-	s.newListener <- listener
+func (s *sched) Subscribe(ctx context.Context, sub chan<- SchedEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs[sub] = struct{}{}
+}
+
+func (s *sched) Unsubscribe(ctx context.Context, sub chan<- SchedEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.subs, sub)
 }
 
 func (s *sched) Reload(newEvents ...*Event) {
@@ -71,10 +84,11 @@ func (s *sched) Reload(newEvents ...*Event) {
 }
 
 func (s *sched) run(ctx context.Context) {
-	var listeners []chan<- SchedEvent
 	defer func() {
-		for _, ln := range listeners {
-			close(ln)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for sub := range s.subs {
+			close(sub)
 		}
 	}()
 
@@ -85,10 +99,6 @@ again:
 		case <-ctx.Done():
 			return
 
-		case ln := <-s.newListener:
-			// Add listener.
-			listeners = append(listeners, ln)
-
 		case events := <-s.newEvents:
 			// Rebuild queue.
 			q.clear()
@@ -98,21 +108,24 @@ again:
 					end := curr.Add(e.Duration)
 					q = append(q, schedQueueEntry{
 						at: end,
-						event: SchedEvent{
-							Type:  SchedEventStop,
-							Event: e,
-							Start: curr,
-							End:   end,
+						sevent: SchedEvent{
+							Type:    SchedEventStop,
+							Event:   e,
+							Current: curr,
+							Next:    e.Next(curr),
+							end:     end,
 						},
 					})
 				} else if next := e.Next(now); !next.IsZero() {
+					end := next.Add(e.Duration)
 					q = append(q, schedQueueEntry{
 						at: next,
-						event: SchedEvent{
-							Type:  SchedEventStart,
-							Event: e,
-							Start: next,
-							End:   next.Add(e.Duration),
+						sevent: SchedEvent{
+							Type:    SchedEventStart,
+							Event:   e,
+							Current: next,
+							Next:    e.Next(next),
+							end:     end,
 						},
 					})
 				}
@@ -129,7 +142,8 @@ again:
 					continue again
 				}
 			}
-			at, event := q[0].at, q[0].event
+			at, sevent := q[0].at, q[0].sevent
+			event := sevent.Event
 
 			// Sleep until event fires.
 			now := s.Now()
@@ -153,48 +167,43 @@ again:
 			}
 
 			// Send event.
-			from := event.Start
-			if event.Type != SchedEventStart || now.Before(event.End) {
-				for _, ln := range listeners {
+			from := sevent.Current
+			if sevent.Type != SchedEventStart || now.Before(sevent.end) {
+				s.mu.Lock()
+				for sub := range s.subs {
 					select {
 					case <-ctx.Done():
+						s.mu.Unlock()
 						return
 					case <-s.reload:
+						s.mu.Unlock()
 						continue again
-					case ln <- event:
+					case sub <- sevent:
 					}
 				}
+				s.mu.Unlock()
 			} else {
 				// There was a misfire. Pretend we fired the "stop" event,
 				// and jump to the next instance closest to now.
-				event.Type = SchedEventStop
+				sevent.Type = SchedEventStop
 				from = now
 			}
 
 			// Reschedule event.
-			if event.Type == SchedEventStart {
+			if sevent.Type == SchedEventStart {
 				// Schedule event stop.
-				q[0] = schedQueueEntry{
-					at: event.End,
-					event: SchedEvent{
-						Type:  SchedEventStop,
-						Event: event.Event,
-						Start: event.Start,
-						End:   event.End,
-					},
-				}
+				entry := &q[0]
+				entry.at = sevent.end
+				entry.sevent.Type = SchedEventStop
 				heap.Fix(&q, 0)
-			} else if next := event.Event.Next(from); !next.IsZero() {
+			} else if next := event.Next(from); !next.IsZero() {
 				// There's another instance to run. Reschedule event.
-				q[0] = schedQueueEntry{
-					at: next,
-					event: SchedEvent{
-						Type:  SchedEventStart,
-						Event: event.Event,
-						Start: next,
-						End:   next.Add(event.Event.Duration),
-					},
-				}
+				entry := &q[0]
+				entry.at = next
+				entry.sevent.Type = SchedEventStart
+				entry.sevent.Current = next
+				entry.sevent.Next = event.Next(next)
+				entry.sevent.end = next.Add(event.Duration)
 				heap.Fix(&q, 0)
 			} else {
 				// Event is finished. Drop it.
@@ -205,8 +214,8 @@ again:
 }
 
 type schedQueueEntry struct {
-	at    time.Time
-	event SchedEvent
+	at     time.Time
+	sevent SchedEvent
 }
 
 type schedQueue []schedQueueEntry
