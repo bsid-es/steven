@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"errors"
-	"sync"
 	"time"
 )
 
@@ -33,16 +32,15 @@ type sched struct {
 	newEvents chan []*Event
 	reload    chan struct{}
 
-	mu        sync.Mutex
-	listeners []chan<- SchedEvent
+	newListener chan chan<- SchedEvent
 }
 
-func NewSched() *sched {
+func NewSched() (*sched, error) {
 	return &sched{
 		Now:       time.Now,
 		newEvents: make(chan []*Event, 1),
 		reload:    make(chan struct{}, 1),
-	}
+	}, nil
 }
 
 var _ Sched = (*sched)(nil)
@@ -56,9 +54,7 @@ func (s *sched) Run(ctx context.Context) error {
 }
 
 func (s *sched) Register(listener chan<- SchedEvent) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.listeners = append(s.listeners, listener)
+	s.newListener <- listener
 }
 
 func (s *sched) Reload(newEvents ...*Event) {
@@ -75,10 +71,9 @@ func (s *sched) Reload(newEvents ...*Event) {
 }
 
 func (s *sched) run(ctx context.Context) {
+	var listeners []chan<- SchedEvent
 	defer func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for _, ln := range s.listeners {
+		for _, ln := range listeners {
 			close(ln)
 		}
 	}()
@@ -89,6 +84,10 @@ again:
 		select {
 		case <-ctx.Done():
 			return
+
+		case ln := <-s.newListener:
+			// Add listener.
+			listeners = append(listeners, ln)
 
 		case events := <-s.newEvents:
 			// Rebuild queue.
@@ -121,91 +120,86 @@ again:
 			heap.Init(&q)
 
 		default:
-		}
-
-		// Get next event.
-		if len(q) == 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.reload:
-				continue again
-			}
-		}
-		at, event := q[0].at, q[0].event
-
-		// Sleep until event fires.
-		now := s.Now()
-		for now.Before(at) {
-			timer := time.NewTimer(at.Sub(now))
-			stop := func() {
-				if !timer.Stop() {
-					<-timer.C
-				}
-			}
-			select {
-			case <-ctx.Done():
-				stop()
-				return
-			case <-s.reload:
-				stop()
-				continue again
-			case <-timer.C:
-			}
-			now = s.Now()
-		}
-
-		// Send event.
-		from := event.Start
-		if event.Type != SchedEventStart || now.Before(event.End) {
-			s.mu.Lock()
-			for _, ln := range s.listeners {
+			// Get next event.
+			if len(q) == 0 {
 				select {
 				case <-ctx.Done():
-					s.mu.Unlock()
 					return
 				case <-s.reload:
-					s.mu.Unlock()
 					continue again
-				case ln <- event:
 				}
 			}
-			s.mu.Unlock()
-		} else {
-			// There was a misfire. Pretend we fired the "stop" event,
-			// and jump to the next instance closest to now.
-			event.Type = SchedEventStop
-			from = now
-		}
+			at, event := q[0].at, q[0].event
 
-		// Reschedule event.
-		if event.Type == SchedEventStart {
-			// Schedule event stop.
-			q[0] = schedQueueEntry{
-				at: event.End,
-				event: SchedEvent{
-					Type:  SchedEventStop,
-					Event: event.Event,
-					Start: event.Start,
-					End:   event.End,
-				},
+			// Sleep until event fires.
+			now := s.Now()
+			for now.Before(at) {
+				timer := time.NewTimer(at.Sub(now))
+				stop := func() {
+					if !timer.Stop() {
+						<-timer.C
+					}
+				}
+				select {
+				case <-ctx.Done():
+					stop()
+					return
+				case <-s.reload:
+					stop()
+					continue again
+				case <-timer.C:
+				}
+				now = s.Now()
 			}
-			heap.Fix(&q, 0)
-		} else if next := event.Event.Next(from); !next.IsZero() {
-			// There's another instance to run. Reschedule event.
-			q[0] = schedQueueEntry{
-				at: next,
-				event: SchedEvent{
-					Type:  SchedEventStart,
-					Event: event.Event,
-					Start: next,
-					End:   next.Add(event.Event.Duration),
-				},
+
+			// Send event.
+			from := event.Start
+			if event.Type != SchedEventStart || now.Before(event.End) {
+				for _, ln := range listeners {
+					select {
+					case <-ctx.Done():
+						return
+					case <-s.reload:
+						continue again
+					case ln <- event:
+					}
+				}
+			} else {
+				// There was a misfire. Pretend we fired the "stop" event,
+				// and jump to the next instance closest to now.
+				event.Type = SchedEventStop
+				from = now
 			}
-			heap.Fix(&q, 0)
-		} else {
-			// Event is finished. Drop it.
-			heap.Pop(&q)
+
+			// Reschedule event.
+			if event.Type == SchedEventStart {
+				// Schedule event stop.
+				q[0] = schedQueueEntry{
+					at: event.End,
+					event: SchedEvent{
+						Type:  SchedEventStop,
+						Event: event.Event,
+						Start: event.Start,
+						End:   event.End,
+					},
+				}
+				heap.Fix(&q, 0)
+			} else if next := event.Event.Next(from); !next.IsZero() {
+				// There's another instance to run. Reschedule event.
+				q[0] = schedQueueEntry{
+					at: next,
+					event: SchedEvent{
+						Type:  SchedEventStart,
+						Event: event.Event,
+						Start: next,
+						End:   next.Add(event.Event.Duration),
+					},
+				}
+				heap.Fix(&q, 0)
+			} else {
+				// Event is finished. Drop it.
+				heap.Pop(&q)
+			}
 		}
 	}
 }

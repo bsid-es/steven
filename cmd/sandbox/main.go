@@ -20,14 +20,14 @@ func main() {
 		panic(err)
 	}
 
-	sched := steven.NewSched()
-
-	sched.Reload(&e)
+	sched, _ := steven.NewSched()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	sched.Run(ctx)
+
+	sched.Reload(&e)
 
 	mainc := make(chan steven.SchedEvent)
 	sched.Register(mainc)
