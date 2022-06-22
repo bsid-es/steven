@@ -20,7 +20,7 @@ func main() {
 		panic(err)
 	}
 
-	sched := steven.NewScheduler()
+	sched := steven.NewSched()
 
 	sched.Reload(&e)
 

@@ -21,13 +21,13 @@ type SchedEvent struct {
 	Start, End time.Time
 }
 
-type Scheduler interface {
+type Sched interface {
 	Reload(...*Event)
 	Run(context.Context) error
 	Register(chan<- SchedEvent)
 }
 
-type scheduler struct {
+type sched struct {
 	Now func() time.Time
 
 	reloadC chan []*Event
@@ -38,17 +38,17 @@ type scheduler struct {
 	ln     []chan<- SchedEvent
 }
 
-func NewScheduler() *scheduler {
-	return &scheduler{
+func NewSched() *sched {
+	return &sched{
 		Now:     time.Now,
 		reloadC: make(chan []*Event, 1),
 		againC:  make(chan struct{}, 1),
 	}
 }
 
-var _ Scheduler = (*scheduler)(nil)
+var _ Sched = (*sched)(nil)
 
-func (s *scheduler) Reload(events ...*Event) {
+func (s *sched) Reload(events ...*Event) {
 	select {
 	case <-s.reloadC:
 	default:
@@ -56,7 +56,7 @@ func (s *scheduler) Reload(events ...*Event) {
 	s.reloadC <- events
 }
 
-func (s *scheduler) Run(ctx context.Context) error {
+func (s *sched) Run(ctx context.Context) error {
 	if s.Now == nil {
 		return errors.New("need a Now function")
 	}
@@ -65,13 +65,13 @@ func (s *scheduler) Run(ctx context.Context) error {
 	return nil
 }
 
-func (s *scheduler) Register(listener chan<- SchedEvent) {
+func (s *sched) Register(listener chan<- SchedEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ln = append(s.ln, listener)
 }
 
-func (s *scheduler) reload(ctx context.Context) {
+func (s *sched) reload(ctx context.Context) {
 	mu, q, again := &s.mu, &s.q, s.againC
 	for {
 		select {
@@ -121,7 +121,7 @@ func (s *scheduler) reload(ctx context.Context) {
 	}
 }
 
-func (s *scheduler) run(ctx context.Context) {
+func (s *sched) run(ctx context.Context) {
 	mu, q, again, ln := &s.mu, &s.q, s.againC, &s.ln
 	defer func() {
 		mu.Lock()
