@@ -60,9 +60,7 @@ func (b *bus) Run(ctx context.Context) error {
 	if b.Now == nil {
 		return errors.New("need a Now function")
 	}
-	sched := make(chan SchedEvent, 1)
-	b.sched.Subscribe(ctx, sched)
-	go b.run(ctx, sched)
+	go b.run(ctx)
 	return nil
 }
 
@@ -88,14 +86,9 @@ func (b *bus) Reload(events ...*Event) {
 	b.newEvents <- events
 }
 
-func (b *bus) run(ctx context.Context, sched <-chan SchedEvent) {
+func (b *bus) run(ctx context.Context) {
 	subs := make(map[chan<- BusEvent]struct{})
-	defer func() {
-		for ln := range subs {
-			close(ln)
-		}
-	}()
-
+	schedC := b.sched.Events()
 	entries := make(map[string]BusEntry)
 	for {
 		select {
@@ -149,7 +142,10 @@ func (b *bus) run(ctx context.Context, sched <-chan SchedEvent) {
 				}
 			}
 
-		case sevent := <-sched:
+		case sevent := <-schedC:
+			if sevent.Event == nil {
+				continue
+			}
 			id := sevent.Event.ID
 			entry := entries[id]
 			entry.Current = sevent.Current

@@ -23,27 +23,22 @@ type SchedEvent struct {
 
 type Sched interface {
 	Run(context.Context) error
-	Subscribe(context.Context, chan<- SchedEvent)
-	Unsubscribe(context.Context, chan<- SchedEvent)
+	Events() <-chan SchedEvent
 	Reload(...*Event)
 }
 
 type sched struct {
 	Now func() time.Time
 
-	newEvents chan []*Event
-
-	subscribe   chan chan<- SchedEvent
-	unsubscribe chan chan<- SchedEvent
+	eventsC chan SchedEvent
+	reloadC chan []*Event
 }
 
 func NewSched() (*sched, error) {
 	return &sched{
-		Now:       time.Now,
-		newEvents: make(chan []*Event, 1),
-
-		subscribe:   make(chan chan<- SchedEvent),
-		unsubscribe: make(chan chan<- SchedEvent),
+		Now:     time.Now,
+		eventsC: make(chan SchedEvent, 1),
+		reloadC: make(chan []*Event, 1),
 	}, nil
 }
 
@@ -57,40 +52,22 @@ func (s *sched) Run(ctx context.Context) error {
 	return nil
 }
 
-func (s *sched) Subscribe(ctx context.Context, sub chan<- SchedEvent) {
-	select {
-	case <-ctx.Done():
-	case s.subscribe <- sub:
-	}
+func (s *sched) Events() <-chan SchedEvent {
+	return s.eventsC
 }
 
-func (s *sched) Unsubscribe(ctx context.Context, sub chan<- SchedEvent) {
+func (s *sched) Reload(events ...*Event) {
 	select {
-	case <-ctx.Done():
-	case s.unsubscribe <- sub:
-	}
-}
-
-func (s *sched) Reload(newEvents ...*Event) {
-	select {
-	case <-s.newEvents:
+	case <-s.reloadC:
 	default:
 	}
-	s.newEvents <- newEvents
+	s.reloadC <- events
 }
 
 func (s *sched) run(ctx context.Context) {
-	subs := make(map[chan<- SchedEvent]struct{})
-	defer func() {
-		for sub := range subs {
-			close(sub)
-		}
-	}()
-
 	q := make(schedQueue, 0)
-	send := make(chan SchedEvent, 1)
 
-	// We create a time with the maximum duration possible so it won't fire
+	// We create a timer with the maximum duration possible so it won't fire
 	// anytime soon, and its arm won't be selected on the next select.
 	timer := time.NewTimer(1<<63 - 1)
 
@@ -101,15 +78,7 @@ func (s *sched) run(ctx context.Context) {
 			timer.Stop()
 			return
 
-		case sub := <-s.subscribe:
-			// New subscriber.
-			subs[sub] = struct{}{}
-
-		case sub := <-s.unsubscribe:
-			// Subscriber is closing.
-			delete(subs, sub)
-
-		case events := <-s.newEvents:
+		case events := <-s.reloadC:
 			// There are new events. Rebuild queue and schedule next event.
 			seen := make(map[string]struct{}, len(events))
 			q.clear()
@@ -171,7 +140,11 @@ func (s *sched) run(ctx context.Context) {
 			sevent := fire.sevent
 			from := sevent.Current
 			if sevent.Type != SchedEventStart || now.Before(sevent.end) {
-				send <- sevent
+				select {
+				case <-ctx.Done():
+					return
+				case s.eventsC <- sevent:
+				}
 			} else {
 				// Oops, we misfired... Pretend we fired the "stop" event, and
 				// jump to the next instance closest to now.
@@ -202,16 +175,6 @@ func (s *sched) run(ctx context.Context) {
 				now := s.Now()
 				at := fire.at
 				timer.Reset(at.Sub(now))
-			}
-
-		case sevent := <-send:
-			// Send event to subscribers.
-			for sub := range subs {
-				select {
-				case <-ctx.Done():
-					return
-				case sub <- sevent:
-				}
 			}
 		}
 	}
