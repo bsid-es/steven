@@ -88,22 +88,29 @@ func (s *sched) run(ctx context.Context) {
 	}()
 
 	q := make(schedQueue, 0)
-	timer := time.NewTimer(1<<63 - 1)
 	send := make(chan SchedEvent, 1)
+
+	// We create a time with the maximum duration possible so it won't fire
+	// anytime soon, and its arm won't be selected on the next select.
+	timer := time.NewTimer(1<<63 - 1)
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Operation was canceled.
 			timer.Stop()
 			return
 
 		case sub := <-s.subscribe:
+			// New subscriber.
 			subs[sub] = struct{}{}
 
 		case sub := <-s.unsubscribe:
+			// Subscriber is closing.
 			delete(subs, sub)
 
 		case events := <-s.newEvents:
-			// Rebuild queue.
+			// There are new events. Rebuild queue and schedule next event.
 			seen := make(map[string]struct{}, len(events))
 			q.clear()
 			now := s.Now()
@@ -140,40 +147,38 @@ func (s *sched) run(ctx context.Context) {
 			}
 			heap.Init(&q)
 
-			// Schedule next event.
 			if !timer.Stop() {
 				<-timer.C
 			}
 			if len(q) > 0 {
-				next := &q[0]
-				at := next.at
+				fire := &q[0]
+				at := fire.at
 				now := s.Now()
 				timer.Reset(at.Sub(now))
 			}
 
 		case <-timer.C:
-			// Get next event to fire.
+			// Fire event, and schedule next event.
 			fire := &q[0]
 			at := fire.at
 			now := s.Now()
 			if now.Before(at) {
+				// Time drift. Sleep again.
 				timer.Reset(at.Sub(now))
 				continue
 			}
 
-			// Send event.
 			sevent := fire.sevent
 			from := sevent.Current
 			if sevent.Type != SchedEventStart || now.Before(sevent.end) {
 				send <- sevent
 			} else {
-				// There was a misfire. Pretend we fired the "stop" event,
-				// and jump to the next instance closest to now.
+				// Oops, we misfired... Pretend we fired the "stop" event, and
+				// jump to the next instance closest to now.
 				sevent.Type = SchedEventStop
 				from = now
 			}
 
-			// Reschedule event.
 			event := sevent.Event
 			if sevent.Type == SchedEventStart {
 				// Schedule event stop.
@@ -193,7 +198,6 @@ func (s *sched) run(ctx context.Context) {
 				heap.Pop(&q)
 			}
 
-			// Sleep until next event.
 			if len(q) > 0 {
 				now := s.Now()
 				at := fire.at
@@ -201,6 +205,7 @@ func (s *sched) run(ctx context.Context) {
 			}
 
 		case sevent := <-send:
+			// Send event to subscribers.
 			for sub := range subs {
 				select {
 				case <-ctx.Done():
