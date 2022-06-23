@@ -104,9 +104,13 @@ func (s *sched) run(ctx context.Context) {
 
 		case events := <-s.newEvents:
 			// Rebuild queue.
+			seen := make(map[string]struct{}, len(events))
 			q.clear()
 			now := s.Now()
 			for _, e := range events {
+				if _, ok := seen[e.ID]; ok {
+					continue
+				}
 				if curr := e.Current(now); !curr.IsZero() {
 					end := curr.Add(e.Duration)
 					q = append(q, schedQueueEntry{
@@ -132,6 +136,7 @@ func (s *sched) run(ctx context.Context) {
 						},
 					})
 				}
+				seen[e.ID] = struct{}{}
 			}
 			heap.Init(&q)
 
