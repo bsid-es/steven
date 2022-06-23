@@ -14,6 +14,7 @@ func now() time.Time {
 
 func main() {
 	e := steven.Event{
+		ID:       "event",
 		Name:     "event",
 		Start:    now().Add(3 * time.Second).Truncate(time.Second),
 		Duration: 1 * time.Second,
@@ -30,7 +31,7 @@ func main() {
 	bus, _ := steven.NewBus(sched)
 	bus.Now = now
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	sched.Run(ctx)

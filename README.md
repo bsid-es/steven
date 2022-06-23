@@ -106,12 +106,10 @@ participant Bus
 participant Sched
 participant Reloader
 
-opt Connect
-	Client->>+Broker: GET /events
-	Broker->>Bus: Subscribe
-	Bus-)Broker: RESET events
-	Broker-)Client: RESET events
-end
+Client->>+Broker: GET /events
+Broker->>Bus: Subscribe
+Bus-)Broker: RESET events
+Broker-)Client: RESET events
 
 opt Event starting
 	Sched-)Bus: START event
