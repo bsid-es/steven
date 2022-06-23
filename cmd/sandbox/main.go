@@ -40,22 +40,24 @@ func main() {
 	sched.Reload(&e)
 	bus.Reload(&e)
 
-	mainc := make(chan steven.BusEvent)
-	bus.Subscribe(ctx, mainc)
-
-	for se := range mainc {
-		var typ string
-		switch se.Type {
-		case steven.BusEventReset:
-			typ = "RESET"
-		case steven.BusEventStart:
-			typ = "START"
-		case steven.BusEventStop:
-			typ = "STOP "
-		}
-		for _, e := range se.Entries {
-			fmt.Println(typ, "|", e.Event.Name, "|", e.Current, "|", e.Next)
+outer:
+	for {
+		select {
+		case <-ctx.Done():
+			break outer
+		case bevent := <-bus.Events():
+			var typ string
+			switch bevent.Type {
+			case steven.BusEventReset:
+				typ = "RESET"
+			case steven.BusEventStart:
+				typ = "START"
+			case steven.BusEventStop:
+				typ = "STOP "
+			}
+			for _, e := range bevent.Entries {
+				fmt.Println(typ, "|", e.Event.Name, "|", e.Current, "|", e.Next)
+			}
 		}
 	}
-
 }
