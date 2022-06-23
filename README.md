@@ -149,8 +149,6 @@ opt New configuration
 	end
 end
 
-opt Close connection
 Client-)Broker: Disconnect
 Broker->>-Broker: Close
-end
 ```
