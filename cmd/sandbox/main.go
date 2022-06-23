@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"net/http"
 	"time"
 
 	"bsid.es/steven"
@@ -31,8 +31,7 @@ func main() {
 	bus, _ := steven.NewBus(sched)
 	bus.Now = now
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 
 	sched.Run(ctx)
 	bus.Run(ctx)
@@ -40,24 +39,7 @@ func main() {
 	sched.Reload(&e)
 	bus.Reload(&e)
 
-outer:
-	for {
-		select {
-		case <-ctx.Done():
-			break outer
-		case bevent := <-bus.Events():
-			var typ string
-			switch bevent.Type {
-			case steven.BusEventReset:
-				typ = "RESET"
-			case steven.BusEventStart:
-				typ = "START"
-			case steven.BusEventStop:
-				typ = "STOP "
-			}
-			for _, e := range bevent.Entries {
-				fmt.Println(typ, "|", e.Event.Name, "|", e.Current, "|", e.Next)
-			}
-		}
-	}
+	broker, _ := steven.NewServer(bus)
+
+	http.ListenAndServe(":3002", broker)
 }
