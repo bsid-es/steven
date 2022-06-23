@@ -58,11 +58,17 @@ func (s *sched) Run(ctx context.Context) error {
 }
 
 func (s *sched) Subscribe(ctx context.Context, sub chan<- SchedEvent) {
-	s.subscribe <- sub
+	select {
+	case <-ctx.Done():
+	case s.subscribe <- sub:
+	}
 }
 
 func (s *sched) Unsubscribe(ctx context.Context, sub chan<- SchedEvent) {
-	s.unsubscribe <- sub
+	select {
+	case <-ctx.Done():
+	case s.unsubscribe <- sub:
+	}
 }
 
 func (s *sched) Reload(newEvents ...*Event) {
