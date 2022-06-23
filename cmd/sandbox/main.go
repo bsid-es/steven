@@ -53,7 +53,7 @@ func main() {
 			typ = "STOP "
 		}
 		for _, e := range se.Entries {
-			fmt.Println(typ, "|", e.Event.Name, "|", e.Previous, "|", e.Current, "|", e.Next)
+			fmt.Println(typ, "|", e.Event.Name, "|", e.Current, "|", e.Next)
 		}
 	}
 

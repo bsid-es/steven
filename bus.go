@@ -20,8 +20,8 @@ type BusEvent struct {
 }
 
 type BusEntry struct {
-	Event                   *Event
-	Previous, Current, Next time.Time
+	Event         *Event
+	Current, Next time.Time
 }
 
 type Bus interface {
@@ -36,12 +36,9 @@ type bus struct {
 
 	sched Sched
 
-	newEvents chan []*Event
-
+	newEvents   chan []*Event
 	subscribe   chan chan<- BusEvent
 	unsubscribe chan chan<- BusEvent
-
-	schedEvents chan SchedEvent
 }
 
 func NewBus(sched Sched) (*bus, error) {
@@ -54,7 +51,6 @@ func NewBus(sched Sched) (*bus, error) {
 		newEvents:   make(chan []*Event, 1),
 		subscribe:   make(chan chan<- BusEvent),
 		unsubscribe: make(chan chan<- BusEvent),
-		schedEvents: make(chan SchedEvent, 1),
 	}, nil
 }
 
@@ -64,8 +60,9 @@ func (b *bus) Run(ctx context.Context) error {
 	if b.Now == nil {
 		return errors.New("need a Now function")
 	}
-	b.sched.Subscribe(ctx, b.schedEvents)
-	go b.run(ctx)
+	sched := make(chan SchedEvent, 1)
+	b.sched.Subscribe(ctx, sched)
+	go b.run(ctx, sched)
 	return nil
 }
 
@@ -91,7 +88,7 @@ func (b *bus) Reload(events ...*Event) {
 	b.newEvents <- events
 }
 
-func (b *bus) run(ctx context.Context) {
+func (b *bus) run(ctx context.Context, sched <-chan SchedEvent) {
 	subs := make(map[chan<- BusEvent]struct{})
 	defer func() {
 		for ln := range subs {
@@ -122,16 +119,20 @@ func (b *bus) run(ctx context.Context) {
 
 		case events := <-b.newEvents:
 			// Rebuild event map.
-			for k := range entries {
-				delete(entries, k)
+			for id := range entries {
+				delete(entries, id)
 			}
 			now := b.Now()
 			for _, event := range events {
+				curr := event.Current(now)
+				next := event.Next(now)
+				if curr.IsZero() && next.IsZero() {
+					continue
+				}
 				entries[event.ID] = BusEntry{
-					Event:    event,
-					Previous: event.Previous(now),
-					Current:  event.Current(now),
-					Next:     event.Next(now),
+					Event:   event,
+					Current: curr,
+					Next:    next,
 				}
 			}
 
@@ -148,29 +149,25 @@ func (b *bus) run(ctx context.Context) {
 				}
 			}
 
-		case sevent := <-b.schedEvents: // TODO(fmrsn): Rename.
-			var typ BusEventType
+		case sevent := <-sched:
+			id := sevent.Event.ID
+			entry := entries[id]
+			entry.Current = sevent.Current
+			entry.Next = sevent.Next
 
-			k := sevent.Event.ID
-			entry := entries[k]
+			var typ BusEventType
 			switch sevent.Type {
 			case SchedEventStart:
 				typ = BusEventStart
-				entry.Current = sevent.Current
-				entry.Next = sevent.Next
 			case SchedEventStop:
 				typ = BusEventStop
-				entry.Previous = sevent.Current
-				entry.Current = time.Time{}
-				entry.Next = sevent.Next
 			}
-			entries[k] = entry
 
-			e := make(map[string]BusEntry, 1)
-			e[k] = entry
+			single := make(map[string]BusEntry, 1)
+			single[id] = entry
 			bevent := BusEvent{
 				Type:    typ,
-				Entries: e,
+				Entries: single,
 			}
 			for sub := range subs {
 				select {
@@ -178,6 +175,12 @@ func (b *bus) run(ctx context.Context) {
 					return
 				case sub <- bevent:
 				}
+			}
+
+			if typ == BusEventStop && entry.Next.IsZero() {
+				delete(entries, id)
+			} else {
+				entries[id] = entry
 			}
 		}
 	}
