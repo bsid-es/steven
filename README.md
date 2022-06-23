@@ -113,18 +113,18 @@ Broker-)Client: RESET events
 
 opt Event starting
 	Sched-)Bus: START event
-	Broker-->Broker: Update state
+	Bus->>Bus: Update state
 	loop Each sub
 		Bus-)Broker: START event
 	end
-	loop Each sub
+	loop Each client
 		Broker-)Client: START event
 	end
 end
 
 opt Event stopping
 	Sched-)Bus: STOP event
-	Broker-->Broker: Update state
+	Bus->>Bus: Update state
 	loop Each sub
 		Bus-)Broker: STOP event
 	end
