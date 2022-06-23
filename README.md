@@ -100,31 +100,59 @@ Client-server communication:
 ```mermaid
 sequenceDiagram
 
-participant Client
+actor Client
 participant Broker
-participant Datastore
-participant Scheduler
+participant Bus
+participant Sched
+participant Reloader
 
-Client->>+Broker:GET /events
-Broker->>+Datastore:list()
-Datastore-->>-Broker:[events]
-Broker-->>Client:RESET [events]
-
-opt START event
-Scheduler-)Broker:START event
-Broker-)Client:START event
+opt Connect
+	Client->>+Broker: GET /events
+	Broker->>Bus: Subscribe
+	Bus-)Broker: RESET events
+	Broker-)Client: RESET events
 end
 
-opt NEXT event
-Scheduler-)Broker:NEXT event
-Broker-)Client:NEXT event
+opt Event starting
+	Sched-)Bus: START event
+	Broker-->Broker: Update state
+	loop Each sub
+		Bus-)Broker: START event
+	end
+	loop Each sub
+		Broker-)Client: START event
+	end
 end
 
-opt STOP event
-Scheduler-)Broker:STOP event
-Broker-)Client:STOP event
+opt Event stopping
+	Sched-)Bus: STOP event
+	Broker-->Broker: Update state
+	loop Each sub
+		Bus-)Broker: STOP event
+	end
+	loop Each client
+		Broker-)Client: STOP event
+	end
 end
 
-Client-)Broker:<disconnect>
-deactivate Broker
+opt Configuration changes
+	par Reload Sched
+		Reloader-)Sched: Reload(events)
+		Sched->>Sched: Rebuild state
+	and Reload Bus
+		Reloader-)Bus: Reload(events)
+		Bus->>Bus: Rebuild state
+	end
+	loop Each sub
+		Bus-)Broker: RESET events
+	end
+	loop Each client
+		Broker-)Client: RESET events
+	end
+end
+
+opt Close connection
+Client-)Broker: Disconnect
+Broker->>-Broker: Close
+end
 ```
