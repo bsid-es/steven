@@ -133,7 +133,7 @@ opt Event stopping
 	end
 end
 
-opt Configuration changes
+opt New configuration
 	par Reload Sched
 		Reloader-)Sched: Reload(events)
 		Sched->>Sched: Rebuild state
